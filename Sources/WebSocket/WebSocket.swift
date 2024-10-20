@@ -11,8 +11,46 @@ import NIOHTTP1
 import NIOConcurrencyHelpers
 import NIOWebSocket
 import NIOSSL
+import NIOPosix
 
 public class WebSocket {
+    public enum Address: Equatable, Sendable {
+        case url(_ url: URL)
+        case unixDomainSocket(_ path: String, requestPath: String = "/")
+        case vsock(cid: UInt32?, port: UInt32? = nil, requestPath: String = "/")
+
+        var scheme: String {
+            switch self {
+            case .url(let url): url.scheme ?? "ws"
+            case .unixDomainSocket, .vsock: "ws"
+            }
+        }
+
+        var host: String {
+            switch self {
+            case .url(let url): url.host ?? "localhost"
+            case .unixDomainSocket(let path, _): path
+            case .vsock: "localhost"
+            }
+        }
+
+        var port: Int {
+            switch self {
+            case .url(let url): url.port ?? (scheme == "wss" ? 443 : 80)
+            case .unixDomainSocket: 0
+            case .vsock(_, let port, _): port.flatMap { Int($0) } ?? -1
+            }
+        }
+
+        var path: String {
+            switch self {
+            case .url(let url): url.path
+            case .unixDomainSocket(_, let requestPath): requestPath
+            case .vsock(_, _, let requestPath): requestPath
+            }
+        }
+    }
+
     private let group: EventLoopGroup
     private let isGroupOwned: Bool
     private let maxFrameSize: Int
@@ -73,11 +111,15 @@ public class WebSocket {
     }
     
     public func connect(url: URL, headers: HTTPHeaders = [:], timeout: TimeAmount = .seconds(10)) {
+        connect(address: .url(url), headers: headers, timeout: timeout)
+    }
+
+    public func connect(address: Address, headers: HTTPHeaders = [:], timeout: TimeAmount = .seconds(10)) {
         group.next().execute {
-            self._connect(url: url, headers: headers, timeout: timeout)
+            self._connect(address: address, headers: headers, timeout: timeout)
         }
     }
-    
+
     public func disconnect() {
         group.next().execute {
             self._disconnect(code: .normalClosure)
@@ -188,18 +230,18 @@ public class WebSocket {
     }
     
     // isn't thread safe
-    private func _connect(url: URL, headers: HTTPHeaders, timeout: TimeAmount) {
+    private func _connect(address: Address, headers: HTTPHeaders, timeout: TimeAmount) {
         guard channel == nil, state.isDisconnected else {
             self._error(WebSocketError.alreadyConnected)
             return
         }
         state = .connecting
         
-        let scheme = url.scheme ?? "ws"
-        let host = url.host ?? "localhost"
-        let port = url.port ?? (scheme == "wss" ? 443 : 80)
-        let path = url.path
-        
+        let scheme = address.scheme
+        let host = address.host
+        let port = address.port
+        let path = address.path
+
         let reqKey = Data((0..<16).map{_ in UInt8.random(in: .min ..< .max)}).base64EncodedString()
         
         let upgradePromise = group.next().makePromise(of: Void.self)
@@ -256,7 +298,14 @@ public class WebSocket {
                 }
             }
         
-        let connect = bootstrap.connect(host: host, port: port)
+        let connect: EventLoopFuture<any Channel> = switch address {
+        case .url: bootstrap.connect(host: host, port: port)
+        case .unixDomainSocket(let socketPath, _): bootstrap.connect(unixDomainSocketPath: socketPath)
+        case .vsock(let cid, let port, _): bootstrap.connect(to: VsockAddress(
+            cid: cid.flatMap { VsockAddress.ContextID(rawValue: $0) } ?? .any,
+            port: port.flatMap { VsockAddress.Port(rawValue: $0) } ?? .any
+        ))
+        }
         connect.cascadeFailure(to: upgradePromise)
         let connected = connect.flatMap { _ in upgradePromise.futureResult }
         connected.whenFailure { err in

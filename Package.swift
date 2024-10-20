@@ -14,7 +14,7 @@ let package = Package(
     dependencies: [
         // Dependencies declare other packages that this package depends on.
         // .package(url: /* package url */, from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", .upToNextMinor(from: "2.40.0")),
+        .package(url: "https://github.com/apple/swift-nio.git", .upToNextMinor(from: "2.75.0")),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", .upToNextMinor(from: "2.19.0")),
     ],
     targets: [
