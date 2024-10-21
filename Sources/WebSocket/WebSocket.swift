@@ -17,12 +17,13 @@ public class WebSocket {
     public enum Address: Equatable, Sendable {
         case url(_ url: URL)
         case unixDomainSocket(_ path: String, requestPath: String = "/")
+        case fileDescriptor(_ descriptor: Int32, requestPath: String = "/")
         case vsock(cid: UInt32?, port: UInt32? = nil, requestPath: String = "/")
 
         var scheme: String {
             switch self {
             case .url(let url): url.scheme ?? "ws"
-            case .unixDomainSocket, .vsock: "ws"
+            case .unixDomainSocket, .fileDescriptor, .vsock: "ws"
             }
         }
 
@@ -30,14 +31,14 @@ public class WebSocket {
             switch self {
             case .url(let url): url.host ?? "localhost"
             case .unixDomainSocket(let path, _): path
-            case .vsock: "localhost"
+            case .fileDescriptor, .vsock: "localhost"
             }
         }
 
         var port: Int {
             switch self {
             case .url(let url): url.port ?? (scheme == "wss" ? 443 : 80)
-            case .unixDomainSocket: 0
+            case .fileDescriptor, .unixDomainSocket: 0
             case .vsock(_, let port, _): port.flatMap { Int($0) } ?? -1
             }
         }
@@ -45,8 +46,9 @@ public class WebSocket {
         var path: String {
             switch self {
             case .url(let url): url.path
-            case .unixDomainSocket(_, let requestPath): requestPath
-            case .vsock(_, _, let requestPath): requestPath
+            case .unixDomainSocket(_, let requestPath),
+                    .fileDescriptor(_, let requestPath),
+                    .vsock(_, _, let requestPath): requestPath
             }
         }
     }
@@ -301,6 +303,7 @@ public class WebSocket {
         let connect: EventLoopFuture<any Channel> = switch address {
         case .url: bootstrap.connect(host: host, port: port)
         case .unixDomainSocket(let socketPath, _): bootstrap.connect(unixDomainSocketPath: socketPath)
+        case .fileDescriptor(let descriptor, _): bootstrap.withConnectedSocket(NIOBSDSocket.Handle(descriptor))
         case .vsock(let cid, let port, _): bootstrap.connect(to: VsockAddress(
             cid: cid.flatMap { VsockAddress.ContextID(rawValue: $0) } ?? .any,
             port: port.flatMap { VsockAddress.Port(rawValue: $0) } ?? .any
